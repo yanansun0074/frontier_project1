@@ -1,0 +1,370 @@
+---
+title: "SidewalkShed"
+format: html
+editor: visual
+---
+
+## Sidewalk Sheds
+
+```{r}
+library(HelpersMG)
+library(readr)
+library(tidyverse)
+library(caret)
+library(mgcv)
+library(sf)
+library(tidycensus)
+library(DHARMa)
+library(httr) 
+library(ggplot2)
+library(viridis)
+
+
+# Read currently active permits file
+D_AP <- read.csv("Active_Sheds_0208.csv")
+
+# process active permits data
+D_AP_2 <- D_AP %>%
+  mutate(
+    active_created_parsed = parse_date_time(D_AP$First.Permit.Date, orders = c('mdy', 'ymd')),
+    active_year = year(ymd(active_created_parsed)),
+    active_expired_parsed = parse_date_time(D_AP$Permit.Expiration.Date, orders = c('mdy', 'ymd')),
+    active_expire_year = year(ymd(active_expired_parsed))
+  ) %>%
+  rename( job__ = Job.Number) %>% 
+  filter(
+    is.na(Longitude.Point) == FALSE,
+    is.na(Latitude.Point) == FALSE,
+  ) %>%
+    st_as_sf(coords = c("Longitude.Point", "Latitude.Point")) %>%
+    st_set_crs(4326)
+
+```
+
+```{r}
+head(D_AP)
+unique(D_AP$activity)
+```
+
+```{r}
+D_AP_census_tract[D_AP_census_tract$NAME == "Census Tract 530, Queens County, New York", ]
+```
+
+```{r}
+# Get Census Data
+my_counties <- c("New York County", "Bronx County", "Queens County", "Kings County", "Richmond County")
+
+D_ACS <- get_acs(
+  geography = "tract",
+  state = "NY",
+  county = my_counties,
+  variables = c(
+    med_inc = "B19013_001",
+    white = "B02001_002",
+    black = "B02001_003",
+    poverty = "B17001_002",
+    tenure = "B25003_001",
+    black_tenure = "B25003B_001",
+    per_tenure_size = "B25010_001",
+    med_bdr_rent = "B25031_001",
+    med_year_build = "B25035_001",
+    total_building = "B25034_001",
+    age_2014 = "B25034_002",
+    age_2010 = "B25034_003",
+    age_2000 = "B25034_004",
+    med_gross_rent = "B25064_001",
+    med_value = "B25077_001",
+    rent_by_income = "B25106_001"
+  ),
+  summary_var = "B01003_001",
+    geometry = TRUE
+) %>%
+   select(-moe, -summary_moe) %>%
+  pivot_wider(names_from = "variable", values_from = "estimate") %>%
+    st_as_sf() %>%
+    mutate(
+        black_perc = black / summary_est,
+        pov_perc = poverty / summary_est,
+        age_before_2000 = total_building - age_2014 - age_2010 - age_2000
+    ) %>%
+  st_set_crs(4326)
+
+```
+
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+D_AP_acs <- D_AP_2 %>% st_join(D_ACS, left = FALSE) 
+
+D_AP_census_tract <- D_AP_acs %>% 
+  data.frame() %>%
+  group_by(NAME) %>%
+  summarise(
+    geometry = geometry[1],
+    n_active = n(),
+    total_age = sum(Age),
+    avg_age = total_age/n_active,
+    long = avg_age > 513,
+    prevalent = n_active > 5.5,
+    black_perc = black_perc[1],
+    pov_perc = pov_perc[1],
+    med_inc = med_inc[1],
+    summary_est = summary_est[1],
+    tenure = tenure[1],
+    black_tenure = black_tenure[1],
+    per_tenure_size = per_tenure_size[1],
+    total_building = total_building[1],
+    age_before_2000 = age_before_2000[1],
+    med_bdr_rent = med_bdr_rent[1],
+    med_year_build = med_year_build[1],
+    med_gross_rent = med_gross_rent[1],
+    med_value = med_value[1],
+    rent_by_income = rent_by_income[1],
+  ) %>%
+  filter(age_before_2000 >= 0) %>%
+  st_as_sf() %>%
+    na.omit()
+
+D_AP_census_tract_11 <- D_AP_acs %>% 
+  data.frame() %>%
+  filter(activity == "Local Law 11") %>%
+  group_by(NAME) %>%
+  summarise(
+    geometry = geometry[1],
+    n_active = n(),
+    total_age = sum(Age),
+    avg_age = total_age/n_active,
+    long = avg_age > 513,
+    prevalent = n_active > 5.5,
+    black_perc = black_perc[1],
+    pov_perc = pov_perc[1],
+    med_inc = med_inc[1],
+    summary_est = summary_est[1],
+    tenure = tenure[1],
+    black_tenure = black_tenure[1],
+    per_tenure_size = per_tenure_size[1],
+    total_building = total_building[1],
+    age_before_2000 = age_before_2000[1],
+    med_bdr_rent = med_bdr_rent[1],
+    med_year_build = med_year_build[1],
+    med_gross_rent = med_gross_rent[1],
+    med_value = med_value[1],
+    rent_by_income = rent_by_income[1],
+  ) %>%
+  filter(age_before_2000 >= 0) %>%
+  st_as_sf() %>%
+    na.omit()
+
+
+D_AP_census_tract_C <- D_AP_acs %>% 
+  data.frame() %>%
+  filter(activity != "Local Law 11") %>%
+  group_by(NAME) %>%
+  summarise(
+    geometry = geometry[1],
+    n_active = n(),
+    total_age = sum(Age),
+    avg_age = total_age/n_active,
+    long = avg_age > 513,
+    prevalent = n_active > 5.5,
+    black_perc = black_perc[1],
+    pov_perc = pov_perc[1],
+    med_inc = med_inc[1],
+    summary_est = summary_est[1],
+    tenure = tenure[1],
+    black_tenure = black_tenure[1],
+    per_tenure_size = per_tenure_size[1],
+    total_building = total_building[1],
+    age_before_2000 = age_before_2000[1],
+    med_bdr_rent = med_bdr_rent[1],
+    med_year_build = med_year_build[1],
+    med_gross_rent = med_gross_rent[1],
+    med_value = med_value[1],
+    rent_by_income = rent_by_income[1],
+  ) %>%
+  filter(age_before_2000 >= 0) %>%
+  st_as_sf() %>%
+    na.omit()
+```
+
+### EDAs
+
+#### Where is the oldest sidewalk sheds?
+
+```{r}
+D_AP_2[order(-D_AP_2$Age),]
+```
+#### In long-lasting sidewalk sheds, are there more commercial or residential buildings?
+
+```{r}
+D_AP_type <- D_AP_2 %>% filter(Age > 513) %>% group_by(Commercial) %>% 
+  summarise (count = n(),
+             average_Age = sum(Age) / count)
+
+ggplot(D_AP_type, aes(x = Commercial, y = count, fill = Commercial)) +
+  geom_bar(stat = "identity") + 
+  geom_text(aes(label = count), vjust = -0.3) +
+  labs(title="Among long-standing sidewalk sheds (Age>513), there are more non-commercial sheds")
+```
+
+
+```{r}
+D_AP_activity <- D_AP_2 %>% group_by(activity) %>% 
+  summarise (count = n(),
+             total_Age = sum(Age),
+             average_Age = sum(Age) / count)
+
+head(D_AP_activity)
+
+D_AP_activity_long <- pivot_longer(D_AP_activity, cols = c(count, average_Age), names_to = "variable", values_to = "value")
+
+ggplot(D_AP_activity, aes(x = activity, y= count, fill = activity)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = count), vjust = -0.3) +
+  labs(title="Among long-standing sidewalk sheds (Age>513), there are more non-commercial sheds")
+
+ggplot(D_AP_activity, aes(x = activity, y= average_Age, fill = activity)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = average_Age), vjust = -0.3) +
+  labs(title="Among long-standing sidewalk sheds (Age>513), there are more non-commercial sheds")
+
+```
+
+```{r}
+D_AP_census_tract_11 %>%
+      st_as_sf() %>%
+    ggplot(aes(color = n_active, fill = n_active)) +
+    geom_sf()
+
+```
+```{r}
+colnames(D_AP_census_tract)
+```
+
+
+```{r}
+D_AP_census_tract_2 <- D_AP_census_tract %>%
+      st_as_sf() %>%
+    filter(avg_age < 4000) 
+    
+ggplot(D_AP_census_tract_2, aes(color = avg_age, fill = avg_age)) +
+    geom_sf()
+  
+ggplot(D_AP_census_tract, aes(color = long, fill = long)) +
+  geom_sf() +
+  viridis::scale_fill_viridis(discrete = TRUE,direction=-1) + 
+  labs(title = "Census tract with sidewalk sheds ages longer than averages")
+
+ggplot(D_AP_census_tract, aes(color = n_active, fill = n_active)) +
+    geom_sf() + 
+  labs(title = "Fewer Sidewalk Sheds Permits in Poorer Areas")
+
+ggplot(D_AP_census_tract, aes(color = pov_perc, fill = pov_perc)) + geom_sf() +
+  labs(title = "Fewer Sidewalk Sheds Permits in Poorer Areas 2")
+
+ggplot(D_AP_census_tract, aes(color = black_perc, fill = black_perc)) +
+    geom_sf() + 
+  labs(title = "Median bedroom rent in census tract")
+
+```
+
+```{r}
+D_AP_census_tract %>%
+ggplot( aes(y = n_active
+            , x = med_bdr_rent)) + 
+  geom_point(size=1,
+        alpha=0.5) +
+  labs ( y = "Number of active sheds permits in a census tract",
+        x = "Median of bedroom rent in a census tract",
+        title = "Area with higher rent per bedroom usually have more active sheds")
+```
+
+```{r}
+ggplot(D_AP_census_tract, aes(y = n_active, x = pov_perc)) + 
+  geom_point(size=1,
+        alpha=0.5) +
+  labs ( y = "Number of active sheds permits in census tract",
+        x = "Percentage of people in poverty in census tract",
+        title = "There are more active sheds permits in richer areas")
+```
+
+The reason could be:
+
+ 1. There are fewer buildings higher than 6-story in poor areas (no related data).
+
+2.  The buildings condition in poor area are just too good to require sidewalk sheds.
+3.  There are as many deteriorated building facades in poor area, but the expense is too high to erect a sidewalk sheds.
+
+```{r}
+ggplot(D_AP_census_tract, aes(y = n_active, x = age_before_2000)) + 
+  geom_point(size=1,
+        alpha=0.5) +
+  labs ( y = "Number of active sheds permits in census tract",
+        x = "Number of buildings built before 2000 in census tract",
+        title = "With more older buildings, there more active sheds today.")
+```
+
+```{r}
+ggplot(D_AP_census_tract, aes(y = n_active, x = black_tenure)) + 
+  geom_point(size=1,
+        alpha=0.5) +
+  labs ( y = "Number of active sheds permits in census tract",
+        x = "African American-only tenure in census tract",
+        title = "Areas with more black-only tenure have fewer active sheds permits.")
+```
+
+### logistic regression
+
+#### 1. For number of active sheds
+
+Looks like a okay model
+
+```{r}
+D_mod_count<-glm(
+  prevalent~
+                    black_perc+pov_perc+summary_est+med_inc+age_before_2000+med_bdr_rent+per_tenure_size+med_value,
+           family = "binomial",
+           data = D_AP_census_tract )
+
+summary(D_mod_count)
+```
+
+
+```{r fig.width=6, fig.height=6}
+par(mfrow= c(2,2))
+plot(D_mod_count)
+```
+
+#### For average duration of active sheds
+
+Not a good model
+
+```{r}
+D_mod_long<-glm(
+  long~
+          black_perc+pov_perc+summary_est+med_inc+age_before_2000+med_bdr_rent+per_tenure_size+med_value,
+           family = "binomial",
+           data = D_AP_census_tract )
+
+summary(D_mod_count)
+```
+
+```{r fig.width=6, fig.height=6}
+par(mfrow= c(2,2))
+plot(D_mod_long)
+```
+
+```{r}
+cdists<-cooks.distance(D_mod_long)
+plot(cdists, cex = .5, pch = 16, xlab = "Index", ylab = "Cook's distance")
+influential_to_rm <- cdists %>% sort(decreasing = T) %>% head(10) %>% names %>% as.numeric
+p_resid<-resid(D_mod_long, "pearson") %>% sort(decreasing = T)
+large_resid<- as.numeric(names(which(p_resid>20)))
+D_mod_long$data[c(large_resid,influential_to_rm),] %>% View
+```
+
+```{r}
+pdata <- predict(D_mod_many, newdata = D_AP_census_tract, type = "response")
+confusionMatrix(data = as.numeric(pdata>0.5) %>% as.factor, reference = D_AP_census_tract$long %>% as.numeric %>% {.-1} %>% as.factor)
+```
