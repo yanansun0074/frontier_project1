@@ -1,0 +1,834 @@
+---
+title: "SidewalkShedComplaints"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+library(readr)
+library(tidyverse)
+library(caret)
+library(mgcv)
+library(sf)
+library(tidycensus)
+library(DHARMa)
+library(httr)
+library(ggplot2)
+library(viridis)
+# install.packages("geojsonio")
+library(geojsonio)
+# install.packages("broom")
+library(broom)
+# install.packages('rjson')
+library(rjson)
+library(jsonlite)
+# install.packages('RSocrata')
+library(RSocrata)
+# installed.packages("zctaCrosswalk")
+library(zctaCrosswalk)
+library(MASS)
+options(tigris_use_cache = TRUE)
+
+```
+
+### Data Cleaning
+
+#### DOB sidewalk shed complaints
+
+Read in DOB Complaints data as of Feb 24, 2024;
+
+Too big \>\>\> Only need to run this once / Don't need to run this
+
+Just read in local cleaned files
+
+```{r}
+DOB_Complaints <- read.socrata("https://data.cityofnewyork.us/resource/eabe-havv.csv")
+D_DOB_Complaints <- as.data.frame(DOB_Complaints)
+
+```
+
+```{r}
+# nrow(D_DOB_Complaints)
+D_Sidewalk_Complaints <- D_DOB_Complaints %>%
+  filter(
+    complaint_category == 23 | complaint_category == 24
+  )  
+
+D_Sidewalk_Complaints_2 <- D_Sidewalk_Complaints %>% 
+  mutate(
+        created_date = parse_date_time(D_Sidewalk_Complaints$date_entered, orders = c("mdy", "ymd")),
+        created_year = year(ymd(created_date)),
+  )
+# nrow(D_Sidewalk_Complaints)
+# head(D_Sidewalk_Complaints_2)
+```
+
+Save cleaned data to a local file
+
+```{r}
+# nrow(D_Sidewalk_Complaints_2)
+write.csv(D_Sidewalk_Complaints_2, 'DOB_Shed_Complaints_0224.csv', row.names = FALSE)
+```
+
+#### 311 homeless related requests
+
+This dataset includes
+
+```         
+"Homeless Person Assistance" "Homeless Encampment"        "Homeless Street Condition"
+```
+
+```{r}
+Homeless_Complaints <- read.socrata("https://data.cityofnewyork.us/resource/sfvx-u55d.csv")
+D_311_HL_Complaints <- as.data.frame(Homeless_Complaints)
+# head(D_311_HL_Complaints)
+```
+
+```{r}
+D_311_Homeless_Complaints_2 <- D_311_HL_Complaints %>%
+  mutate(
+    created_year = year(ymd_hms(Created.Date)),) %>%
+  rename(created_date = Created.Date,
+         closed_date = Closed.Date)
+```
+
+```{r}
+write.csv(D_311_Homeless_Complaints_2, "311_Homeless_Complaints_0224.csv", row.names = FALSE)
+```
+
+#### 311 trash related complaints
+
+All rows with location type "Sidewalk"
+
+```{r}
+Trash_Complaints <- read.socrata("https://data.cityofnewyork.us/resource/h2g7-xbpj.csv")
+D_311_Trash_Complaints <- as.data.frame(Trash_Complaints)
+head(D_311_Trash_Complaints)
+```
+
+```{r}
+unique(D_311_Trash_Complaints$Location.Type)
+```
+
+```{r}
+D_311_Sidewalk_Trash_2 <- D_311_Trash_Complaints %>%
+  filter(Location.Type == 'Sidewalk')%>%
+  mutate(
+    created_year = year(ymd_hms(Created.Date)),) %>%
+  rename(created_date = Created.Date,
+         closed_date = Closed.Date)
+```
+
+```{r}
+nrow(D_311_Sidewalk_Trash_2)
+nrow(D_311_Trash_Complaints)
+write.csv(D_311_Sidewalk_Trash_2, "311_Sidewalk_Trash_0224.csv", row.names = FALSE)
+```
+
+### Processing
+
+Get permits data
+
+```{r}
+D_permits <- read.csv('NOW_Shed_Permits_3.csv')
+# head(D_permits)
+```
+
+#### Notice a mismatch between given data and my data (skip this section plz)
+
+Found that total number of active sidewalk shed by year is higher than expected (much higher than 8000 shown by active map this year). So I did a concat between active map data and my processed data.
+
+```{r}
+D_active_permits <- D_permits %>% 
+  filter(active == TRUE)
+nrow(D_active_permits)
+```
+
+```{r}
+D_active_permits <- D_active_permits %>%
+  filter(expired_date > '2024-02-26')
+nrow(D_active_permits)
+```
+
+```{r}
+D_active_map <- read.csv('Active_Sheds0226.csv')
+nrow(D_active_map)
+head(D_active_map)
+```
+
+```{r}
+names(D_active_map)[names(D_active_map) == "Job.Number"] <- "job__"
+head(D_active_map)
+```
+
+By the concat and difference, I got what were missing from the active map. Check these job\_\_ one by one in the DOB NOW database, I found that my data was correct: all of them have an expired date after Feb 26, 2024.
+
+Might have to ask for a response from DOB since a lot of news reporting refer to this active permit map.
+
+```{r}
+difference <- anti_join(D_active_permits, D_active_map, by = "job__")
+print(difference)
+```
+
+#### Get 2023 / 2022 data and map it by CB\>\>\>CT
+
+```{r}
+D_permits_A <- D_permits %>% 
+  mutate(
+    Age = difftime(expired_date,created_date,units = "days")
+  ) %>%
+  filter(
+    expired_date >= '2023-06-30 00:00:00' & created_date <= '2023-01-01 00:00:00',
+    is.na(lat) == FALSE,
+    is.na(long) == FALSE,
+  ) %>%
+    st_as_sf(coords = c("long", "lat")) %>%
+    st_set_crs(4326)
+# nrow(D_permits_A)
+
+D_permits_B <- D_permits %>%
+  mutate(
+    Age = difftime(expired_date,created_date,units = "days")
+  ) %>%
+  filter(
+    expired_date >= '2023-12-31 00:00:00' & created_date <= '2023-07-01 00:00:00',
+    is.na(lat) == FALSE,
+    is.na(long) == FALSE,
+  ) %>%
+    st_as_sf(coords = c("long", "lat")) %>%
+    st_set_crs(4326)
+# nrow(D_permits_B)
+```
+
+##### Tried to group by community board. But most have negative changes
+
+```{r}
+D_2022_permits_B <- D_2022_permits %>%
+  data.frame() %>%
+  group_by(c_b_no) %>%
+  summarize(
+    n_2022 = n()
+  )
+
+D_2023_permits_B <- D_2023_permits %>%
+  data.frame() %>%
+  group_by(c_b_no) %>%
+  summarize(
+    n_2023 = n()
+  )
+```
+
+```{r}
+D_changes <- left_join(D_2023_permits_B, D_2022_permits_B)
+  
+D_changes[is.na(D_changes)] <- 0
+
+D_changes_1 <- D_changes %>%
+  mutate(
+    diff = n_2023 - n_2022
+  )
+
+# D_changes_2 <- merge(D_2023_permits_B, D_2022_permits_B, by = "c_b_no", all = TRUE)
+print(D_changes_1)
+```
+
+#### Census Data by zipcode
+
+It is saved in "ACS_zipcode.csv". Read it from there
+
+```{r}
+# Get Census Data
+my_counties <- c("New York County", "Bronx County", "Queens County", "Kings County", "Richmond County")
+
+county_fips <- c('36061','36005', '36081', '36047', '36085')
+
+D_ACS <- get_acs(
+    year = 2020,
+    geography = "zcta",
+#    state = "NY",
+#    county = "New York County",  zipcode cannot search by county
+    variables = c(
+        med_inc = "B19013_001",
+        white = "B02001_002",
+        black = "B02001_003",
+        poverty = "B17001_002",
+        tenure = "B25003_001",
+        per_tenure_size = "B25010_001",
+        med_bdr_rent = "B25031_001",
+        med_year_build = "B25035_001",
+        total_building = "B25034_001",
+        age_2014 = "B25034_002",
+        age_2010 = "B25034_003",
+        age_2000 = "B25034_004",
+        med_gross_rent = "B25064_001",
+        med_value = "B25077_001"
+    ),
+    summary_var = "B01003_001",
+    geometry = TRUE
+    ) %>%
+    dplyr::select(-moe, -summary_moe) %>%
+    pivot_wider(names_from = "variable", values_from = "estimate") %>%
+    st_as_sf() %>%
+    mutate(
+        black_perc = black / summary_est,
+        pov_perc = poverty / summary_est,
+        age_before_2000 = total_building - age_2014 - age_2010 - age_2000
+    ) %>%
+    dplyr::select(-black, -poverty, -age_2014, -age_2010, -age_2000) %>%
+    st_set_crs(4326)
+
+NY_acs <- D_ACS %>% dplyr::filter(GEOID %in% get_zctas_by_county(county_fips))
+
+
+```
+
+Write census data by zipcode
+
+```{r}
+write.csv(NY_acs, "ACS_zipcode.csv", row.names = FALSE)
+```
+
+Read census data by zipcode
+
+```{r}
+NY_acs <- read.csv("ACS_zipcode.csv")
+```
+
+Join census data with ACS data
+
+```{r}
+# Join active permit data with census tract data
+D_acs_A <- D_permits_A %>% st_join(NY_acs, left = FALSE)
+D_acs_B <- D_permits_B %>% st_join(NY_acs, left = FALSE)
+
+D_census_tract_A <- D_acs_A %>%
+  data.frame() %>%
+  group_by(NAME) %>%
+  summarize(
+    n_A = n(),
+    geometry = geometry[1],
+        max_age_A = max(Age),
+        total_age_A = sum(Age),
+        avg_age_A = total_age_A / n_A,
+        black_perc = black_perc[1],
+        pov_perc = pov_perc[1],
+        med_inc = med_inc[1],
+        summary_est = summary_est[1],
+        tenure = tenure[1],
+        per_tenure_size = per_tenure_size[1],
+        total_building = total_building[1],
+        age_before_2000 = age_before_2000[1],
+        med_bdr_rent = med_bdr_rent[1],
+        med_year_build = med_year_build[1],
+        med_gross_rent = med_gross_rent[1],
+        med_value = med_value[1],
+  ) %>% st_as_sf() %>%
+    na.omit()
+
+# D_2022_census_tract$n_2022 <- ifelse(is.na(D_2022_census_tract$n_2022), 0, D_2022_census_tract$n_2022)
+# D_2022_census_tract <- mutate_all(D_2022_census_tract, ~ifelse(is.na(.), 0, .))
+
+D_census_tract_B <- D_acs_B %>%
+  data.frame() %>%
+  group_by(NAME) %>%
+  summarize(
+    n_B = n(),
+    max_age_B = max(Age),
+        total_age_B = sum(Age),
+        avg_age_B = total_age_B / n_B,
+    geometry = geometry[1],
+  ) %>% st_as_sf() %>%
+    na.omit()
+
+
+# join group A and B permit data from different time
+D_changes_ct <- st_join(D_census_tract_B, D_census_tract_A) 
+D_changes_ct$n_A <- ifelse(is.na(D_changes_ct$n_A), 0, D_changes_ct$n_A)
+D_changes_ct$n_B <- ifelse(is.na(D_changes_ct$n_B), 0, D_changes_ct$n_B)
+
+D_changes_ct_2 <- D_changes_ct %>%
+  mutate(
+    shed_change = n_B - n_A,
+    zip_code = as.integer(substr(NAME.x, nchar(NAME.x) - 4, nchar(NAME.x)))
+  ) %>% dplyr::select(-NAME.y, -NAME.x)
+
+# print(D_changes_ct_2)
+```
+
+#### Get complaints data
+
+1.  sidewalk complaints - no geo data
+
+    used zipcode
+
+```{r}
+D_Sidewalk_Complaints_2 <- read.csv('DOB_Shed_Complaints_0224.csv')
+
+D_Sidewalk_Complaints_A <- D_Sidewalk_Complaints_2 %>%
+  filter(created_date >= '2023-01-01' & created_date <= '2023-06-30' & is.na(zip_code) == FALSE & zip_code != '') %>% 
+  group_by(zip_code) %>%
+  summarize(
+    SC_a = n()
+  )
+
+D_Sidewalk_Complaints_B <- D_Sidewalk_Complaints_2 %>%
+  filter(created_date >= '2023-07-01' & created_date <= '2023-12-31' & is.na(zip_code) == FALSE & zip_code != '') %>% 
+  group_by(zip_code) %>%
+  summarize(
+    SC_b = n()
+  )
+
+D_SC_changes <- merge(D_Sidewalk_Complaints_A, D_Sidewalk_Complaints_B) 
+
+D_SC_changes[is.na(D_SC_changes)] <- 0
+
+D_SC_changes <- D_SC_changes %>% 
+  mutate(SC_change = SC_a - SC_b)
+
+D_changes_ct_3 <- left_join(D_changes_ct_2, D_SC_changes, by = "zip_code")
+
+D_changes_ct_3$SC_change[is.na(D_changes_ct_3$SC_change)] <- 0
+```
+
+2.  Homeless complaints data
+
+```{r}
+D_311_Homeless_Complaints_A <- D_311_Homeless_Complaints_2 %>%
+  filter(created_date >= '2023-01-01' & created_date <= '2023-06-30' & is.na(Incident.Zip) == FALSE & Incident.Zip != '') %>%
+  group_by(Incident.Zip) %>% 
+  summarize(
+    HL_a = n()
+  )
+
+D_311_Homeless_Complaints_B <- D_311_Homeless_Complaints_2 %>%
+  filter(created_date >= '2023-07-01' & created_date <= '2023-12-31' & is.na(Incident.Zip) == FALSE & Incident.Zip != '') %>%
+  group_by(Incident.Zip) %>% 
+  summarize(
+    HL_b = n()
+  )
+
+D_Homeless_Changes <- merge(D_311_Homeless_Complaints_A, D_311_Homeless_Complaints_B)
+
+D_Homeless_Changes[is.na(D_Homeless_Changes)] <- 0
+
+D_Homeless_Changes <- D_Homeless_Changes %>% 
+  mutate(HL_change = HL_a - HL_b) %>%
+  rename(zip_code = Incident.Zip)
+
+# print(D_Homeless_Changes)
+D_changes_ct_4 <- left_join(D_changes_ct_3, D_Homeless_Changes, by = "zip_code")
+
+D_changes_ct_4$HL_change[is.na(D_changes_ct_4$HL_change)] <- 0
+```
+
+3.  311 trash data
+
+```{r}
+D_311_Sidewalk_Trash_A <- D_311_Sidewalk_Trash_2 %>%
+  filter(created_date >= '2023-01-01' & created_date <= '2023-06-30' & is.na(Incident.Zip) == FALSE & Incident.Zip != '') %>%
+  group_by(Incident.Zip) %>% 
+  summarize(
+    TH_a = n()
+  )
+
+D_311_Sidewalk_Trash_B <- D_311_Sidewalk_Trash_2 %>%
+  filter(created_date >= '2023-07-01' & created_date <= '2023-12-31' & is.na(Incident.Zip) == FALSE & Incident.Zip != '') %>%
+  group_by(Incident.Zip) %>% 
+  summarize(
+    TH_b = n()
+  )
+D_Trash_Changes <- merge(D_311_Sidewalk_Trash_A, D_311_Sidewalk_Trash_B) 
+
+D_Trash_Changes[is.na(D_Trash_Changes)] <- 0
+
+D_Trash_Changes <- D_Trash_Changes %>% 
+  mutate(TH_change = TH_a - TH_b) %>%
+  rename(zip_code = Incident.Zip)
+
+D_changes_ct_5 <- left_join(D_changes_ct_4, D_Trash_Changes, by = "zip_code")
+
+D_changes_ct_5$TH_change[is.na(D_changes_ct_5$TH_change)] <- 0
+```
+
+### Modeling
+
+1.  GAM: gamma variable
+
+```{r}
+# install.packages("mgcv")
+library(mgcv)
+# install.packages("mgcViz")
+library(mgcViz)
+```
+
+```{r}
+D_changes_ct_5 <- D_changes_ct_5 %>% mutate(
+  max_age_B = as.numeric(max_age_B),
+  avg_age_B = as.numeric(avg_age_B)
+)
+# print(D_changes_ct_5)
+
+```
+
+#### Mar 7 Version: Get changes in the highest
+
+```{r}
+print(D_changes_ct_5)
+```
+
+#### Mar 6 Version
+
+```{r}
+# homeless
+mod_HL_gamma <- gam(HL_b ~ s(n_B) + s(black_perc) + s(summary_est), 
+                     family = Gamma(link = "log"), data = D_changes_ct_5)
+
+summary(mod_HL_gamma)
+```
+
+```{r}
+gam.check(mod_HL_gamma)
+HL_res<-simulateResiduals(mod_HL_gamma)
+plot(HL_res)
+```
+
+```{r}
+# scaffolding complaints
+mod_SC_gamma <- gam(SC_b ~ s(n_B) + s(black_perc) + s(summary_est) + s(max_age_B), 
+                     family = Gamma(link = "log"), data = D_changes_ct_5)
+
+summary(mod_SC_gamma)
+```
+
+```{r}
+gam.check(mod_SC_gamma)
+SC_res<-simulateResiduals(mod_SC_gamma)
+plot(SC_res)
+```
+
+```{r}
+# Street Trash complaints
+mod_TH_gamma <- gam(TH_b ~ s(n_B) + s(black_perc) + s(summary_est), 
+                     family = Gamma(link = "log"), data = D_changes_ct_5)
+
+summary(mod_TH_gamma)
+```
+
+```{r}
+gam.check(mod_TH_gamma)
+TH_res<-simulateResiduals(mod_TH_gamma)
+plot(TH_res)
+```
+
+#### Mar 1 Version
+
+```{r}
+mod_now_gamma <- gam(n_B ~ max_age_B + s(HL_b) + s(SC_b) + s(TH_b) + black_perc + summary_est, 
+           family = Gamma(link = "log"), data = D_changes_ct_5)
+
+summary(mod_now_gamma)
+```
+
+```{r}
+par(mfrow=c(2,3))
+plot(mod_now_gamma, trans = inv.logit, shift = coef(mod)[1])
+```
+
+```{r}
+gam.check(mod_now_gamma)
+res_shed<-simulateResiduals(mod_now_gamma)
+plot(res_shed)
+#testResiduals(res_shed)
+#plotResiduals(res_shed, form = D_data_model_balt_all_f$Ten.Year.Age.Groups) 
+```
+
+2.  Poisson: model looks okay. But DHARMa residuals are not uniform
+
+```{r}
+mod_shed_poisson <- glm(n_B ~ max_age_B + HL_b + SC_b + TH_b + black_perc + summary_est,
+               family = poisson, data = D_changes_ct_5)
+
+summary(mod_shed_poisson)
+```
+
+```{r}
+res_p<-simulateResiduals(mod_shed_poisson)
+plot(res_p, smoothScatter=F, cex = .3)
+testResiduals(res_p)
+```
+
+3.  Negative Binomial: Residuals look better
+
+```{r}
+# library(MASS)
+mod_shed_nb <- glm.nb(n_B ~ max_age_B + HL_b + SC_b + TH_b + black_perc + summary_est,
+               data = D_changes_ct_5)
+
+summary(mod_shed_nb)
+```
+
+```{r}
+res_p<-simulateResiduals(mod_shed_nb)
+plot(res_p, smoothScatter=F, cex = .3)
+testResiduals(res_p)
+```
+
+```{r}
+mod_shed_A_p <- gam(n_A ~ max_age_A + s(HL_a) + s(SC_a) + s(TH_a) + black_perc + summary_est, method = "REML",
+               family = poisson, data = D_changes_ct_5)
+
+summary(mod_shed_A_p)
+```
+
+Tried changes: but not quite well
+
+4.  Logistics model with changes (increase number \> 2) \>\>\> Shed number increase or not
+
+Didn't work quite well either.
+
+```{r}
+D_changes_hl <- D_changes_ct_5 %>% mutate(
+  increased = HL_change > 2
+)
+```
+
+```{r}
+mod_change_log <- glm(increased ~ max_age_B + shed_change +black_perc + summary_est, 
+             family = "binomial", data = D_changes_hl)
+
+summary(mod_change_log)
+```
+
+```{r}
+par(mfrow= c(2,2))
+plot(mod_change_log)
+```
+
+5.  GAM (beta regression) with changes in sidewalk shed: Not good
+
+```{r}
+mod_change_br <- gam(SC_change ~ s(shed_change) + s(black_perc) + summary_est + s(max_age_B),
+               family = betar(), data = D_changes_hl)
+
+summary(mod_change_br)
+```
+
+```{r}
+mod_res<-simulateResiduals(mod_change_br)
+plot(mod_res)
+#testResiduals(mod_res)
+#plotResiduals(mod_res, form = mod)
+
+#new diagnostic plot 
+gam.check(mod_change_br)
+```
+
+6.  Linear model with changes
+
+```{r}
+mod_change_l <- lm(shed_change ~ HL_change + SC_change + TH_change + black_perc + summary_est + avg_age_B,
+               data = D_changes_ct_5)
+
+summary(mod_change_l)
+par(mfrow=c(2,2))
+plot(mod_change_l)
+```
+
+Looks like negative binomial and gam look relatively well with shed \# & complaints during a given period of time.
+
+What model to use with changes (with negative values)
+
+### Plot
+
+```{r}
+print(D_changes_ct_5)
+```
+
+```{r}
+library(ggplot2)
+  
+D_hl_b <- D_changes_ct_5 %>% filter(
+  n_B <300,
+  HL_b<1500
+) %>%  dplyr::select(n_B, HL_b, zip_code, max_age_B) %>%
+  mutate(aged = max_age_B > 1500)
+
+ggplot(D_hl_b, aes(x=n_B, y=HL_b, color = aged)) + geom_point(size = 0.7) + 
+  geom_smooth(method="lm", se = FALSE, color = "#619CFF", linetype="dashed", alpha=0.5) +
+  labs(
+    title = "Zip codes with more active sidewalk sheds receive more homeless complaints",
+    subtitle = "(July 2023 - Dec 2023)",
+    x = "# of active sidewalk sheds (permits)",
+    y = "# of 311 homeless complaints",
+    color = "With shed > 1500 days",
+    caption = "Data from DOB NOW sidewalk shed permit issuance and NYC 311 complaints"
+  ) + scale_color_manual(values = c("TRUE" = "#F8766D", "FALSE" = "#00BA38")) + 
+  theme_light() +
+  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+```
+
+```{r}
+D_sc_b <- D_changes_ct_5 %>% filter(
+  n_B <300,
+  SC_b<1500
+) %>% dplyr::select(n_B, SC_b, zip_code, max_age_B) %>%
+  mutate(aged = max_age_B > 1500)
+
+ggplot(D_sc_b, aes(x=n_B, y=SC_b, color = aged)) + geom_point(size = 0.7) + 
+  geom_smooth(method="lm", se = FALSE, color = "#619CFF", linetype="dashed", alpha=0.5) +
+  labs(
+    title = "Zip codes with more active sidewalk sheds induce more homeless complaints",
+    subtitle = "(July 2023 - Dec 2023)",
+    x = "# of active sidewalk sheds (permits)",
+    y = "# of 311 homeless complaints",
+    color = "With shed > 1500 days",
+    caption = "Data from DOB NOW sidewalk shed permit issuance and NYC 311 complaints"
+  ) + scale_color_manual(values = c("TRUE" = "#F8766D", "FALSE" = "#00BA38")) + 
+  theme_light() +
+  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+```
+
+2.  Time changes of zipcode 10036
+
+```{r}
+print(D_permits)
+```
+
+3.  Expiration Vs. New
+
+```{r}
+D_permits_ex <- D_permits %>% filter(
+  expired_year == 2023,
+) %>% group_by(expired_month) %>%
+  summarize(
+    n_ = n()
+  ) %>% rename(month = expired_month) %>%
+  mutate(group = "expired")
+
+D_permits_new <- D_permits %>% filter(
+  created_year == 2023,
+) %>% mutate(
+  created_month = month(created_date)
+) %>% group_by(created_month) %>%
+  summarize(
+    n_ = n()
+  ) %>% rename(month = created_month) %>%
+  mutate(group = "created")
+
+combined <- rbind(D_permits_ex, D_permits_new)
+print(combined)
+```
+
+```{r}
+# Create a line chart using ggplot2
+ggplot(combined, aes(x = month, y = n_, color = factor(group))) +
+  geom_line() +
+  labs(title = "# of New Versus Expired Sidewalk Shed Permit in 2023",
+       x = "Month",
+       y = "# of sidewalk shed",
+       color = "Group") + scale_x_continuous(breaks = 1:12)+
+  theme_minimal() + 
+  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+```
+
+```{r}
+ggplot(data = D_permits_ex, aes(x=expired_month, y=n_expired)) +geom_line()+
+  geom_point()
+```
+
+4.  Midtown Manhattan doubling down
+
+```{r}
+D_midtown_ex <- D_permits %>% filter(borough == "MANHATTAN" & c_b_no == 105 & expired_year == 2023) %>%
+  group_by(expired_month) %>%
+  summarize(n_ = n()) %>% rename(month = expired_month) %>%
+  mutate(group = "Midtown Expired Permits")
+
+D_midtown_ne <- D_permits %>% filter(borough == "MANHATTAN" & c_b_no == 105 & created_year == 2023) %>% mutate(
+  created_month = month(created_date)) %>%
+  group_by(created_month) %>%
+  summarize(n_ = n()) %>% rename(month = created_month) %>%
+  mutate(group = "Midtown New Permits")
+
+D_permits_ex <- D_permits %>% filter(
+  expired_year == 2023,
+) %>% group_by(expired_month) %>%
+  summarize(
+    n_ = n()
+  ) %>% rename(month = expired_month) %>%
+  mutate(group = "NYC")
+
+combined_2 <- rbind(D_midtown_ex, D_midtown_ne)
+
+```
+
+```{r}
+# Create a line chart using ggplot2
+ggplot(combined_2, aes(x = month, y = n_, color = factor(group))) +
+  geom_line() +
+  labs(title = "# of Expired Sidewalk Shed Permit in 2023 Midtown Manhattan",
+       x = "Month",
+       y = "# of sidewalk shed",
+       color = "Group") + scale_x_continuous(breaks = 1:12)+
+  theme_minimal() + 
+  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+```
+
+5.  Mapping of zipcode complaints data
+
+```{r}
+head(merged)
+```
+
+```{r}
+gdf_zip <- st_read("zip_code_040114.geojson")
+
+gdf_m <- gdf_zip %>% filter(COUNTY == "New York")
+
+merged <- st_join(gdf_m, D_changes_ct_5, left = TRUE)
+```
+
+```{r}
+# ggplot() +
+#    geom_sf(data = merged, aes(fill = HL_b)) +
+#    scale_colour_gradientn(name = "Homeless Complaints",
+#        low = "white", high = "red",
+#        na.value = "gray") +
+#        name = "Homeless Complaints",
+#        low = "white", high = "red",
+#        na.value = "gray",
+#        guide = "legend",
+#        breaks = seq(min(merged$HL_b, na.rm = TRUE), max(merged$HL_b, na.rm = TRUE), length.out = 5)
+      
+                      #   breaks = my_breaks, labels = my_breaks
+#    labs(title = "311 Homeless Complaints by Zipcode")+ theme_light() +
+#  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+
+ggplot() +
+    geom_sf(data = merged, aes(fill = n_B)) +
+    scale_fill_gradient(
+        name = "Active Sidewalk Sheds",
+        low = "white", high = "red",
+        na.value = "gray")+
+#        guide = "legend",
+#        breaks = seq(min(merged$HL_b, na.rm = TRUE), max(merged$HL_b, na.rm = TRUE), length.out = 5)
+      
+                      #   breaks = my_breaks, labels = my_breaks
+    labs(title = "# of Active Sidewalk Shed by Zip-code",
+         caption = "July 2023 - Dec 2023",
+         legend = "Sidewalk Shed") + scale_x_continuous(breaks = seq(-73.95955, -73.90717, n = 5))
+  theme_minimal() +
+  theme(text = element_text(family = "Arial", size = 11), legend.text = element_text(size = 8))
+```
+
+```{r}
+merged[merged$n_B == 939, ]
+```
